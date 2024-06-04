@@ -4,7 +4,8 @@ from elftools.elf.elffile import ELFFile
 
 context(arch="amd64")
 
-chall, = glob("/challenge/*.ko")
+#chall, = glob("/challenge/*.ko")
+chall = "2.1.stripped.ko"
 f = open(chall, "rb")
 e = ELFFile(f)
 
