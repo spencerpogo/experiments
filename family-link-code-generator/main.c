@@ -89,9 +89,9 @@ int main(int argc, char **argv) {
   printf("pre_result = %08x\n", pre_result);
   // read it as big endian then cast from unsigned to signed
   int32_t result = (int32_t) ntohl(pre_result);
-  printf("result = %08x\n", result);
   // clear sign bit
   result &= 0x7fffffff;
+  printf("result = %08x\n", result);
 
   uint64_t valid_from_ms = interval_beginning_timestamp_ms;
   uint64_t valid_to_ms = valid_from_ms + code_validity_ms;
