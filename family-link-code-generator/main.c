@@ -27,14 +27,24 @@ uint64_t htonll(uint64_t value) {
 }
 
 int main(int argc, char **argv) {
+  if (argc < 2) {
+    printf("Usage: %s <shared secret>\n", argv[0]);
+    return 1;
+  }
+
   // these paramaters are hardcoded
   unsigned long code_granularity_ms = 1000 * 60; // 1 minute
   // these paramaters are part of the config payload
-  char *key = "AIfVJHLYwvVY2Z6tb3PttH16KM7JRplt5w";
+  char *key = argv[1];
   unsigned long code_validity_ms = 1000 * 60 * 60; // 60 minutes
   // unsigned long clock_drift_tolerance_ms = code_validity_ms / 2;
 
-  //char *data = "hello world";
+  for (int i = 0; i < strlen(key); i++) {
+    if (key[i] == ' ' || key[i] == '\n') {
+      printf("Warning: whitespace in key\n");
+      break;
+    }
+  }
 
   struct timeval tv;
   if (gettimeofday(&tv, NULL)) {
@@ -68,12 +78,13 @@ int main(int argc, char **argv) {
     printf("HMAC() unexpectedly allocated or did something weird\n");
     return 2;
   }
+
+  printf("digest (%d bytes): ", md_len);
   print_hex(buf, (size_t) md_len);
 
   // the last nibble of the digest
   const int8_t offset = ((uint8_t*) buf)[md_len - 1] & 0xf;
-  printf("md_len = %d\n", md_len);
-  printf("offset = buf[%d] = %02hhx\n", md_len - 1, offset);
+  printf("offset = buf[%d] & 0x0f = %02hhx\n", md_len - 1, offset);
   uint32_t pre_result = *((uint32_t*) &buf[offset]);
   printf("pre_result = %08x\n", pre_result);
   // read it as big endian then cast from unsigned to signed
