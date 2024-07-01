@@ -7,6 +7,8 @@
 #     https://docs.scrapy.org/en/latest/topics/downloader-middleware.html
 #     https://docs.scrapy.org/en/latest/topics/spider-middleware.html
 
+import logging
+
 from .items import GeniusArtist, GeniusSong
 
 BOT_NAME = "genius_spider"

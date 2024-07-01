@@ -10,7 +10,7 @@ from scrapy.http.request import NO_CALLBACK
 from scrapy.pipelines.files import FilesPipeline
 from itemadapter import ItemAdapter
 
-from .items import GeniusSong
+from .items import GeniusArtist, GeniusSong
 
 
 class GeniusSpiderPipeline:
@@ -24,6 +24,8 @@ class DummyFileItem(scrapy.Item):
 
 class GeniusImagePipeline(FilesPipeline):
     def get_media_requests(self, item, info):
+        if isinstance(item, GeniusArtist):
+            return [Request(item["image_url"], callback=NO_CALLBACK)]
         if isinstance(item, GeniusSong):
             return [Request(item["art_thumb_url"], callback=NO_CALLBACK)]
         return []
@@ -39,6 +41,17 @@ class GeniusImagePipeline(FilesPipeline):
         )
 
     def item_completed(self, results, item, info):
+        if isinstance(item, GeniusArtist):
+            ok_results = [r for ok, r in results if ok]
+            if len(ok_results) != 1:
+                raise AssertionError(
+                    f"expected 1 ok result, got {len(ok_results)}: {results!r}"
+                )
+            (r,) = ok_results
+            if r["url"] != item["image_url"]:
+                raise AssertionError()
+            item["image_path"] = ok_results[0]["path"]
+            return item
         if isinstance(item, GeniusSong):
             ok_results = [r for ok, r in results if ok]
             if len(ok_results) != 1:
