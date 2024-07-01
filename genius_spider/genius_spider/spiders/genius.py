@@ -69,10 +69,10 @@ class GeniusSpider(scrapy.Spider):
         )
         yield scrapy.Request(
             self.gen_songs_api_url(artist_id, 1),
-            callback=self.parse_songs_api,
+            callback=partial(self.parse_songs_api, artist_id),
         )
 
-    def parse_songs_api(self, response):
+    def parse_songs_api(self, artist_id, response):
         # p = Path("songs-resp.json"); p.exists() or p.write_bytes(response.body)
         data = json.loads(response.text)
         for song in data.get("response", {}).get("songs", []):
@@ -87,6 +87,12 @@ class GeniusSpider(scrapy.Spider):
                 song["path"], callback=partial(self.parse_lyrics, song_item)
             )
             # break
+            next_page = data["response"]["next_page"]
+            if next_page is not None:
+                yield scrapy.Request(
+                    self.gen_songs_api_url(artist_id, next_page),
+                    callback=partial(self.parse_songs_api, artist_id)
+                )
 
     def parse_lyrics(self, song_item, response):
         lyrics_html = "<br>".join(
