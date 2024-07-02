@@ -1,0 +1,1 @@
+sqlite3 db.sqlite3 '.import --csv goodreads_library_export.csv goodreads'

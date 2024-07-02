@@ -12,3 +12,5 @@ genius_spider/files
 genius_spider/artists.jsonl
 genius_spider/state_dict.json
 genius_spider/songs.jsonl
+library-autosearch/goodreads_library_export.csv
+library-autosearch/db.sqlite3
