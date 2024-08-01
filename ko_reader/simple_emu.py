@@ -398,7 +398,7 @@ def emulate_mov(ctx, insn):
     if a.type == CS_OP_REG and b.type == CS_OP_REG:
         write_reg(ctx, a.reg, read_reg(ctx, b.reg))
         return
-    if a.type == CS_OP_MEM and b.type in {CS_OP_REG, CS_OP_IMM}:
+    if a.type in {CS_OP_MEM, CS_OP_FP} and b.type in {CS_OP_REG, CS_OP_IMM}:
         addr = lea_mem_ref(ctx, a.mem)
         if b.type == CS_OP_REG:
             val = read_reg(ctx, b.reg)
@@ -415,7 +415,7 @@ def emulate_mov(ctx, insn):
                 val=val, size=a.size
             )
         return
-    if a.type == CS_OP_REG and b.type == CS_OP_MEM:
+    if a.type == CS_OP_REG and b.type in {CS_OP_MEM, CS_OP_FP}:
         addr = lea_mem_ref(ctx, b.mem)
         v = None
         if (
@@ -438,21 +438,21 @@ def emulate_mov(ctx, insn):
 def emulate_lea(ctx, insn):
     a, b = insn.operands
 
-    if a.type == CS_OP_REG and b.type == CS_OP_MEM:
+    if a.type == CS_OP_REG and b.type in {CS_OP_MEM, CS_OP_FP}:
         write_reg(ctx, a.reg, lea_mem_ref(ctx, b.mem))
         return
-    raise AssertionError()
+    raise AssertionError(f"unimplemented lea variant: {insn}")
 
 
 def emulate_add(ctx, insn):
     a, b = insn.operands
 
-    if a.type == CS_OP_REG and b.type == CS_OP_MEM:
+    if a.type == CS_OP_REG and b.type in {CS_OP_MEM, CS_OP_FP}:
         lhs = read_reg(ctx, a.reg)
         rhs = Ldm(lea_mem_ref(ctx, b.mem), size=b.size)
         write_reg(ctx, a.reg, simplify(ctx, Add(lhs, rhs)))
         return
-    raise AssertionError()
+    raise AssertionError(f"unimplemented add variant: {insn}")
 
 
 def emulate_sub(ctx, insn):
@@ -629,3 +629,60 @@ def emulate(ctx, insn):
             if insn.eflags & flag_val != 0:
                 process_eflags_val(ctx, insn, flag_val)
     return r
+
+
+def emulate_next(ctx, gen):
+    insn = next(gen)
+    emulate(ctx, insn)
+    return insn
+
+
+def search_insn(ctx, desc, insn_finder, gen):
+    while True:
+        try:
+            insn = next(gen)
+        except StopIteration as e:
+            raise AssertionError(f"Did not find {desc}") from e
+        emulate(ctx, insn)
+        if insn_finder.matches(ctx, insn):
+            return insn
+
+
+def modifies_reg(insn, reg):
+    _, regs_written = insn.regs_access()
+    return reg in regs_written
+
+def imm_operand(imm_value=None):
+    if imm_value is None:
+        return lambda op: op.type == CS_OP_IMM
+    return lambda op: op.type == CS_OP_IMM and op.imm == imm_value
+
+
+class InsnFinder:
+    __slots__ = ("insn_id", "conds")
+
+    def __init__(self, insn_id):
+        self.insn_id = insn_id
+        self.conds = []
+    
+    def with_id(self, insn_id):
+        self.conds.append(lambda _ctx, insn: insn.id == insn_id)
+        return self
+    
+    def with_any_operand(self, operand_cond):
+        self.conds.append(lambda _ctx, insn: any(map(operand_cond, insn.operands)))
+        return self
+    
+    def with_operand(self, i, operand_cond):
+        self.conds.append(lambda _ctx, insn: operand_cond(insn.operands[i]))
+        return self
+    
+    def matches(self, ctx, insn):
+        if self.insn_id is not None and insn.id != self.insn_id:
+            return False
+        return all(cond(ctx, insn) for cond in self.conds)
+    
+    def take_imm(self, i, insn):
+        assert self.matches(None, insn)
+        assert insn.operands[i].type == CS_OP_IMM
+        return insn.operands[i].imm

@@ -13,27 +13,8 @@ from capstone.x86 import *
 
 from relocation import RelocationHandler
 import simple_emu
+from simple_emu import InsnFinder, imm_operand
 import sixth_gear
-
-
-def find_continaing_function(e, rela, section_offset):
-    """
-    Find the first STT_FUNC symbol in the symbol table associated with `rela` that
-    contains the byte that lies `section_offset` bytes from the start of the section
-    `rela` is associated with.
-    Contains means within the range [st_value, st_value+st_size).
-    Return the symbol, and the number of bytes from the start of the function to the offset.
-    """
-    symtab = e.get_section(rela["sh_link"])
-    for sym in symtab.iter_symbols():
-        if sym["st_info"]["type"] != "STT_FUNC":
-            continue
-        if (
-            section_offset >= sym["st_value"]
-            and section_offset <= sym["st_value"] + sym["st_size"]
-        ):
-            return sym, section_offset - sym["st_value"]
-    raise AssertionError(f"no STT_FUNC contains this offset")
 
 
 def read_symbol(f, section, sym):
@@ -42,9 +23,9 @@ def read_symbol(f, section, sym):
     of that symbol.
     """
     location = section["sh_offset"] + sym["st_value"]
-    print('seek to', hex(location))
+    print("seek to", hex(location))
     f.seek(location)
-    return read_exact(f, sym["st_size"])
+    return sixth_gear.read_exact(f, sym["st_size"])
 
 
 calling_convention = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
@@ -106,27 +87,17 @@ def main():
     e = elf.elf
 
     # kernel modules don't request particular memory offsets. they must be PIE as
-    #  they have to be loaded into kernel address space. 
+    #  they have to be loaded into kernel address space.
     # This means that when we mimic performing relocations, we can pick whatever
-    #  virtual addresses we want. 
+    #  virtual addresses we want.
     # Let's pick a scheme that will match the ghidra listing view.
     # Make base match the start of the first section.
-    base = 0x00100000
-    start_offset = next(
-        sec for sec in e.iter_sections() if sec["sh_type"] != "SHT_NULL"
-    )["sh_offset"]
-    offset_to_addr = lambda offset: offset + base - start_offset
-    addr_to_offset = lambda addr: addr - base + start_offset
-    addresses = {
-        sec.name: offset_to_addr(sec["sh_offset"]) for sec in e.iter_sections()
-    }
-    if len(addresses) != e.num_sections():
-        raise AssertionError("duplicate section names")
+    reloc_scheme = sixth_gear.RelocationScheme.from_ghidra(elf)
 
-    elf.relocate(elf.section(".gnu.linkonce.this_module"))
-    elf.relocate(elf.section(".text"))
-    elf.relocate(elf.section(".text.unlikely"))
-    elf.relocate(elf.section(".data"))
+    reloc_scheme.relocate(elf.section(".gnu.linkonce.this_module"))
+    reloc_scheme.relocate(elf.section(".text"))
+    reloc_scheme.relocate(elf.section(".text.unlikely"))
+    reloc_scheme.relocate(elf.section(".data"))
 
     text = elf.section(".text")
     trela = elf.relocations_for(text)
@@ -135,13 +106,11 @@ def main():
     #  kernel APIs they use. In order to be relocated properly, the module will have
     #  to reference the symbol names they want to import. We can trace these
     #  relocations back to the `call`` instruction they are adjusting.
-    proc_create_reloc = elf.relocation_referencing(trela, "proc_create")
+    proc_create_reloc = trela.relocation_referencing("proc_create")
     print("proc_create reloc", proc_create_reloc)
-    func, func_offset = find_continaing_function(
-        e, trela, proc_create_reloc["r_offset"]
-    )
+    func, func_offset = proc_create_reloc.find_continaing_function()
     print("func", func.name, func.entry, func_offset)
-    init_text = read_symbol(f, text, func)
+    init_text = func.read_exact()
 
     # struct proc_dir_entry *proc_create(
     #   const char *name, // arg 0
@@ -150,58 +119,33 @@ def main():
     #   const struct file_operations *proc_fops // arg 3
     # );
     # ...so proc_fops is calling_convention[3]
-    fops_loading_insn = insn_modifying_reg_before(
-        e, trela, init_text, calling_convention[3], func, func_offset
+    *_, fops_loading_insn = (
+        insn
+        for insn in elf.disasm_text(init_text[:func_offset])
+        if simple_emu.modifies_reg(insn, calling_convention[3])
     )
     print(fops_loading_insn)
-    if fops_loading_insn.insn_name() != "mov":
-        raise AssertionError()
-    if len(fops_loading_insn.operands) != 2:
-        raise AssertionError()
-    _, fops_operand = fops_loading_insn.operands
-    if fops_operand.type != CS_OP_IMM:
-        raise AssertionError()
-    fops_addr = fops_operand.imm
+    fops_addr = InsnFinder(X86_INS_MOV).take_imm(1, fops_loading_insn)
     print("fops addr", hex(fops_addr))
 
     unlocked_ioctl_offset = 0x50
-    f.seek(addr_to_offset(fops_addr) + unlocked_ioctl_offset)
-    ioctl_addr = e.structs.Elf_word64("").parse_stream(f)
+    reloc_scheme.seek_addr(fops_addr + unlocked_ioctl_offset)
+    ioctl_addr = elf.read_word64()
     print("ioctl addr:", hex(ioctl_addr))
 
-    md = Cs(CS_ARCH_X86, CS_MODE_64)
-    # detail needed to populate insn.operands
-    md.detail = True
-    f.seek(addr_to_offset(ioctl_addr))
-    ioctl_code = f.read(256)
     ctx = simple_emu.Context.new()
-    insn_gen = md.disasm(ioctl_code, ioctl_addr)
-    while True:
-        try:
-            insn = next(insn_gen)
-        except StopIteration as e:
-            raise AssertionError("didn't find ioctl opcode cmp instruction") from e
-        simple_emu.emulate(ctx, insn)
-        if insn.id == X86_INS_CMP and any(
-            i.type == X86_OP_IMM and i.imm == 0x539 for i in insn.operands
-        ):
-            break
-    insn = next(insn_gen)
-    print(insn)
-    simple_emu.emulate(ctx, insn)
-    if insn.id != X86_INS_JE:
-        raise AssertionError()
-    # jmp always has one operand
-    ioctl_part2_op, = insn.operands
-    if ioctl_part2_op.type != X86_OP_IMM:
-        raise AssertionError()
-    # as long as we set the disassembly base address correctly, capstone will do
-    #  the relative jump calculation for us (ins addr + ins size + rel value)
-    ioctl_part2_addr = ioctl_part2_op.imm
+    insn_gen = reloc_scheme.disasm_addr(ioctl_addr, 256)
+    simple_emu.search_insn(
+        ctx,
+        "ioctl opcode cmp",
+        InsnFinder(X86_INS_CMP).with_any_operand(imm_operand(0x539)),
+        insn_gen
+    )
+    insn = simple_emu.emulate_next(ctx, insn_gen)
+    ioctl_part2_addr = InsnFinder(X86_INS_JE).take_imm(0, insn)
     print("ioctl_part2_addr", hex(ioctl_part2_addr))
-    
-    f.seek(addr_to_offset(ioctl_part2_addr))
-    gen = md.disasm(f.read(256), ioctl_part2_addr)
+
+    gen = reloc_scheme.disasm_addr(ioctl_part2_addr, 256)
     while True:
         try:
             insn = next(gen)
@@ -217,11 +161,11 @@ def main():
             #  being broken by changes in optimizations from level to level.
             # order of a, b will always be the same due to instruction encoding.
             if (
-                a.type == X86_OP_MEM 
-                and a.size == 1 # operand size 1 byte => byte ptr
+                a.type == X86_OP_MEM
+                and a.size == 1  # operand size 1 byte => byte ptr
                 and a.mem.base == X86_REG_RSP
                 and b.type == X86_OP_IMM
-                and b.imm == 0xff
+                and b.imm == 0xFF
             ):
                 break
     ip_rsp_off = a.mem.disp
@@ -237,22 +181,21 @@ def main():
 
     print("loop start", hex(loop_start_addr))
     print("loop end", hex(loop_end_addr))
-    f.seek(addr_to_offset(ioctl_part2_addr))
-    #ctx = simple_emu.Context.new()
-    gen = md.disasm(f.read(loop_end_addr - ioctl_part2_addr), ioctl_part2_addr)
+    # ctx = simple_emu.Context.new()
+    gen = reloc_scheme.disasm_addr(ioctl_part2_addr, loop_end_addr - ioctl_part2_addr)
     # find the last call instruction within the loop
     call_interp_insn = None
     for insn in gen:
         simple_emu.emulate(ctx, insn)
         if insn.address >= loop_start_addr and insn.id == X86_INS_CALL:
             call_interp_insn = insn
-    print(call_interp_insn)
-    from pprint import pprint
-    for reg, val in ctx.regs.items():
-        print(f"{md.reg_name(reg)}:", val)
+    print("call_interp_insn", call_interp_insn)
+    # from pprint import pprint
+    # for reg, val in ctx.regs.items():
+    #    print(f"{md.reg_name(reg)}:", val)
     return
 
-    op, = call_interp_insn.operands
+    (op,) = call_interp_insn.operands
     if op.type != CS_OP_IMM:
         raise AssertionError()
     interp_insn_addr = op.imm
@@ -266,11 +209,11 @@ def main():
     for insn in gen:
         if insn.op_str == "byte ptr [rdi + 0x10e], r10b":
             print(ctx.stack_locals)
-            #break
+            # break
         simple_emu.emulate(ctx, insn)
-        #if insn.op_str == "ecx, ah":
+        # if insn.op_str == "ecx, ah":
         #    break
-        #if insn.id == X86_INS_JS:
+        # if insn.id == X86_INS_JS:
         #    break
         if insn.id in {X86_INS_JNE, X86_INS_JE, X86_INS_JS}:
             count += 1
@@ -279,11 +222,12 @@ def main():
                 break
         if insn.id == X86_INS_RET:
             break
-    
+
     for reg, val in ctx.regs.items():
         reg == X86_REG_R10 and print(f"{md.reg_name(reg)}:", val)
 
     from pprint import pprint
+
     print("SF", ctx.flags["SF"])
     print("ZF", ctx.flags["ZF"])
     pprint(ctx.branches)
@@ -309,7 +253,7 @@ def main():
             return val
         scale, mem_local = val.left, val.right
         if scale.scale != 3:
-            return val    
+            return val
         if not isinstance(scale.val, simple_emu.Local):
             return val
         ip_local = scale.val
@@ -332,7 +276,7 @@ def main():
     print(ins_emu_val)
     if not isinstance(ins_emu_val, simple_emu.Or):
         raise AssertionError()
-    
+
     return
 
 

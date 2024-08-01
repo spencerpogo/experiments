@@ -46,3 +46,4 @@ unhex = lambda d, **kw: real_unhex(d.replace(" ", "") if isinstance(d, str) else
 from capstone import *
 md = Cs(CS_ARCH_X86, CS_MODE_64)
 md.detail = True
+get_insn = lambda h: next(md.disasm(unhex(h), 0x0))
