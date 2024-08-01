@@ -135,14 +135,12 @@ def main():
 
     ctx = simple_emu.Context.new()
     insn_gen = reloc_scheme.disasm_addr(ioctl_addr, 256)
-    simple_emu.search_insn(
-        ctx,
+    ctx.search_insn(
         "ioctl opcode cmp",
         InsnFinder(X86_INS_CMP).with_any_operand(imm_operand(0x539)),
         insn_gen
     )
-    insn = simple_emu.emulate_next(ctx, insn_gen)
-    ioctl_part2_addr = InsnFinder(X86_INS_JE).take_imm(0, insn)
+    ioctl_part2_addr = InsnFinder(X86_INS_JE).take_imm(0, ctx.emulate_next(insn_gen))
     print("ioctl_part2_addr", hex(ioctl_part2_addr))
 
     gen = reloc_scheme.disasm_addr(ioctl_part2_addr, 256)
@@ -151,7 +149,7 @@ def main():
             insn = next(gen)
         except StopIteration as e:
             raise AssertionError("didn't find interpreter loop end comparison") from e
-        simple_emu.emulate(ctx, insn)
+        ctx.emulate(insn)
         # the following block searches for this instruction:
         # cmp byte ptr [rsp + <ip_rsp_off>], 0xff
         if insn.id == X86_INS_CMP:
@@ -186,7 +184,7 @@ def main():
     # find the last call instruction within the loop
     call_interp_insn = None
     for insn in gen:
-        simple_emu.emulate(ctx, insn)
+        ctx.emulate(insn)
         if insn.address >= loop_start_addr and insn.id == X86_INS_CALL:
             call_interp_insn = insn
     print("call_interp_insn", call_interp_insn)

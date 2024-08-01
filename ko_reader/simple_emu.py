@@ -229,29 +229,6 @@ def setup_flags():
     return {flag: FlagInitial() for flag in flags}
 
 
-@dataclass
-class Context:
-    regs: Dict[int, EmuValue]
-    stack_locals: Dict[int, StoredLocal]
-    simplification_rules: List[Callable[[EmuValue], EmuValue]]
-    branches: Optional[List[Branch]]
-    flags: Optional[Dict[str, FlagAction]]
-
-    @classmethod
-    def new(cls):
-        return cls(
-            regs=setup_regs(), stack_locals={}, simplification_rules=[], branches=None,
-            flags=None
-        )
-    
-    @classmethod
-    def new_branches(cls):
-        return cls(
-            regs=setup_regs(), stack_locals={}, simplification_rules=[], branches=[],
-            flags=setup_flags()
-        )
-
-
 def simplify(ctx, val):
     if isinstance(val, Add):
         if isinstance(val.left, Scale) and val.left.val == val.right:
@@ -612,40 +589,60 @@ def process_eflags_val(ctx, insn, flag_val):
     raise AssertionError(f"Unsupported flag operation {act.op}")
 
 
-def emulate(ctx, insn):
-    r = _emulate(ctx, insn)
-    if ctx.branches is None:
+@dataclass
+class Context:
+    regs: Dict[int, EmuValue]
+    stack_locals: Dict[int, StoredLocal]
+    simplification_rules: List[Callable[[EmuValue], EmuValue]]
+    branches: Optional[List[Branch]]
+    flags: Optional[Dict[str, FlagAction]]
+
+    @classmethod
+    def new(cls):
+        return cls(
+            regs=setup_regs(), stack_locals={}, simplification_rules=[], branches=None,
+            flags=None
+        )
+    
+    @classmethod
+    def new_branches(cls):
+        return cls(
+            regs=setup_regs(), stack_locals={}, simplification_rules=[], branches=[],
+            flags=setup_flags()
+        )
+
+    def emulate(ctx, insn):
+        r = _emulate(ctx, insn)
+        if ctx.branches is None:
+            return r
+
+        _, regs_written = insn.regs_access()
+        if insn.id == X86_INS_TEST:
+            emulate_test(ctx, insn)
+        if insn.id in {X86_INS_JE, X86_INS_JNE, X86_INS_JS}:
+            emulate_conditional_jmp(ctx, insn)
+
+        if X86_REG_EFLAGS in regs_written:
+            for i in range(64):
+                flag_val = 1 << i
+                if insn.eflags & flag_val != 0:
+                    process_eflags_val(ctx, insn, flag_val)
         return r
 
-    _, regs_written = insn.regs_access()
-    if insn.id == X86_INS_TEST:
-        emulate_test(ctx, insn)
-    if insn.id in {X86_INS_JE, X86_INS_JNE, X86_INS_JS}:
-        emulate_conditional_jmp(ctx, insn)
+    def emulate_next(ctx, gen):
+        insn = next(gen)
+        ctx.emulate(insn)
+        return insn
 
-    if X86_REG_EFLAGS in regs_written:
-        for i in range(64):
-            flag_val = 1 << i
-            if insn.eflags & flag_val != 0:
-                process_eflags_val(ctx, insn, flag_val)
-    return r
-
-
-def emulate_next(ctx, gen):
-    insn = next(gen)
-    emulate(ctx, insn)
-    return insn
-
-
-def search_insn(ctx, desc, insn_finder, gen):
-    while True:
-        try:
-            insn = next(gen)
-        except StopIteration as e:
-            raise AssertionError(f"Did not find {desc}") from e
-        emulate(ctx, insn)
-        if insn_finder.matches(ctx, insn):
-            return insn
+    def search_insn(ctx, desc, insn_finder, gen):
+        while True:
+            try:
+                insn = next(gen)
+            except StopIteration as e:
+                raise AssertionError(f"Did not find {desc}") from e
+            ctx.emulate(insn)
+            if insn_finder.matches(ctx, insn):
+                return insn
 
 
 def modifies_reg(insn, reg):
@@ -686,3 +683,9 @@ class InsnFinder:
         assert self.matches(None, insn)
         assert insn.operands[i].type == CS_OP_IMM
         return insn.operands[i].imm
+    
+    def take_src_imm(self, insn):
+        return self.take_imm(0, insn)
+    
+    def take_dst_imm(self, insn):
+        return self.take_imm(1, insn)
