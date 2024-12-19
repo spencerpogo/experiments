@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% from "macros/widgets.html" import accordion_item %}
+
+{% block content %}
+  <div class="jumbotron">
+    <div class="container">
+      <h1>{{ user.name }}</h1>
+      <h1>
+        <a href="{{ url_for("pwncollege_belts.view_belts") }}">
+          {% if belts.users[user.id] %}
+          <span title="Earned on {{belts.users[user.id].date}}">
+            <img src="{{ url_for("views.themes", path="img/dojo/"+belts.users[user.id].color+".svg") }}", class="scoreboard-belt">
+          </span>
+          {% else %}
+          <img src="{{ url_for("views.themes", path="img/dojo/white.svg") }}" class="scoreboard-belt">
+          {% endif %}
+        </a>
+      </h1>
+      <h2>
+        {% for badge in badges[user.id] %}
+        <span title="{{badge.text}}">
+          <a href="{{badge.url}}">{{badge.emoji}}</a>
+          </span><span>
+        </span>
+        {% endfor %}
+      </h2>
+
+
+      {% if user.affiliation %}
+        <h3 class="d-inline-block">
+          <span class="badge badge-primary">{{ user.affiliation }}</span>
+        </h3>
+      {% endif %}
+
+      {% if user.country %}
+        <h3 class="d-inline-block">
+          <span class="badge badge-primary">
+            <i class="flag-{{ user.country.lower() }}"></i>
+            {{ lookup_country_code(user.country) }}
+          </span>
+        </h3>
+      {% endif %}
+
+      {% for field in user.fields %}
+        <h3 class="d-block">
+          {{ field.name }}: {{ field.value }}
+        </h3>
+      {% endfor %}
+
+      <div class="pt-3">
+        {% if user.website %}
+          <a href="{{ user.website }}" target="_blank" style="color: inherit;" rel="noopener">
+            <i class="fas fa-external-link-alt fa-2x px-2" data-toggle="tooltip" data-placement="top"
+               title="{{ user.website }}"></i>
+          </a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="container">
+    {% for dojo in dojos if dojo_scores.user_ranks[user.id] and dojo_scores.user_ranks[user.id][dojo.id] %}
+      {% set rank = dojo_scores.user_ranks[user.id][dojo.id] %}
+      {% set max_rank = dojo_scores.dojo_ranks[dojo.id] | length %}
+      {% set solves = dojo_scores.user_solves[user.id][dojo.id] %}
+      <a class="text-decoration-none" href="{{ url_for('pwncollege_dojo.listing', dojo=dojo.reference_id) }}">
+        <h2>{{ dojo.name }}</h2>
+        <h4>
+          <i class="fas fa-flag pt-3 pr-3" title="Solves"></i>
+          <td>{{ solves }} / {{ dojo.challenges | length }}</td>
+          <i class="fas fa-trophy pt-3 pr-3 pl-5 " title="Rank"></i>
+          <td>{{ rank or "-" }} / {{ max_rank or "-" }}</td>
+        </h4>
+      </a>
+
+      <br>
+
+      <div class="accordion" id="modules-{{dojo.hex_dojo_id}}">
+        {% for module in dojo.modules %}
+          {% set solves = module_scores.user_solves[user.id][dojo.id][module.module_index] %}
+          {% set rank = module_scores.user_ranks[user.id][dojo.id][module.module_index] %}
+          {% set max_rank = module_scores.module_ranks[dojo.id][module.module_index] | length %}
+          {% call(header) accordion_item("modules-{}".format(dojo.hex_dojo_id), loop.index) %}
+            {% if header %}
+              <h4 class="accordion-item-name">{{ module.name }}</h4>
+              <span class="challenge-header-right">
+                <i class="fas fa-flag pr-1" title="Solves"></i>
+                <td>{{ solves }} / {{ module.challenges | length }}</td>
+                <i class="fas fa-trophy pr-1 pl-3 " title="Rank"></i>
+                <td>{{ rank or "-" }} / {{ max_rank or "-" }}</td>
+              </span>
+            {% else %}
+              TODO
+            {% endif %}
+          {% endcall %}
+        {% endfor %}
+      </div>
+
+      <br>
+    {% endfor %}
+{% endblock %}

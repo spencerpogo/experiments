@@ -1,0 +1,337 @@
+import datetime
+import hashlib
+import io
+import logging
+import os
+import pytz
+import re
+import tarfile
+import tempfile
+
+import bleach
+import docker
+import docker.errors
+from flask import current_app, Response, Markup, abort, g
+from itsdangerous.url_safe import URLSafeSerializer
+from CTFd.exceptions import UserNotFoundException, UserTokenExpiredException
+from CTFd.models import db, Solves, Challenges, Users
+from CTFd.utils.encoding import hexencode
+from CTFd.utils.user import get_current_user
+from CTFd.utils.modes import get_model
+from CTFd.utils.config.pages import build_markdown
+from CTFd.utils.security.sanitize import sanitize_html
+from sqlalchemy import String, Integer
+from sqlalchemy.sql import or_
+
+from ..models import Dojos, DojoMembers, DojoAdmins, DojoChallenges, WorkspaceTokens
+
+
+ID_REGEX = "^[A-Za-z0-9_.-]+$"
+def id_regex(s):
+    return re.match(ID_REGEX, s) and ".." not in s
+
+
+def force_cache_updates():
+    return bool(os.environ.get("CACHE_WARMER"))
+
+
+def container_name(user):
+    return f"user_{user.id}"
+
+
+def get_current_container(user=None):
+    user = user or get_current_user()
+    if not user:
+        return None
+
+    docker_client = docker.from_env()
+
+    try:
+        return docker_client.containers.get(container_name(user))
+    except docker.errors.NotFound:
+        return None
+
+
+def get_active_users(active_desktops=False):
+    docker_client = docker.from_env()
+    containers = docker_client.containers.list(filters=dict(name="user_"), ignore_removed=True)
+
+    def used_desktop(c):
+        if c.status != 'running':
+            return False
+
+        try:
+            return b"accepted" in next(c.get_archive("/tmp/vnc/vncserver.log")[0])
+        except StopIteration:
+            return False
+        except docker.errors.NotFound:
+            return False
+
+    if active_desktops:
+        containers = [ c for c in containers if used_desktop(c) ]
+    uids = [ c.name.split("_")[-1] for c in containers ]
+    users = [ Users.query.filter_by(id=uid).first() for uid in uids ]
+    return users
+
+
+def serialize_user_flag(account_id, challenge_id, *, secret=None):
+    if secret is None:
+        secret = current_app.config["SECRET_KEY"]
+    serializer = URLSafeSerializer(secret)
+    data = [account_id, challenge_id]
+    user_flag = serializer.dumps(data)[::-1]
+    return user_flag
+
+
+def user_ipv4(user):
+    # Subnet: 10.0.0.0/8
+    # Reserved: 10.0.0.0/24, 10.255.255.0/24
+    # Gateway: 10.0.0.1
+    # User IPs: 10.0.1.0 - 10.255.254.255
+    user_ip = (10 << 24) + (1 << 8) + user.id
+    assert user_ip < (10 << 24) + (255 << 16) + (255 << 8)
+    return f"{user_ip >> 24 & 0xff}.{user_ip >> 16 & 0xff}.{user_ip >> 8 & 0xff}.{user_ip & 0xff}"
+
+
+def redirect_internal(redirect_uri, auth=None):
+    response = Response()
+    if auth:
+        response.headers["X-Accel-Redirect"] = "@forward"
+        response.headers["redirect_auth"] = auth
+    else:
+        response.headers["X-Accel-Redirect"] = "/internal/"
+    response.headers["redirect_uri"] = redirect_uri
+    return response
+
+
+def redirect_user_socket(user, port, url_path):
+    assert user is not None
+    return redirect_internal(f"http://{container_name(user)}:{port}/{url_path}")
+
+
+def render_markdown(s):
+    raw_html = build_markdown(s or "")
+    if "dojo" in g and g.dojo.official:
+        return Markup(raw_html)
+
+    markdown_tags = [
+        "h1", "h2", "h3", "h4", "h5", "h6",
+        "b", "i", "strong", "em", "tt",
+        "p", "br",
+        "span", "div", "blockquote", "code", "pre", "hr",
+        "ul", "ol", "li", "dd", "dt",
+        "img",
+        "a",
+        "sub", "sup",
+    ]
+    markdown_attrs = {
+        "*": ["id"],
+        "img": ["src", "alt", "title"],
+        "a": ["href", "alt", "title"],
+    }
+    clean_html = bleach.clean(raw_html, tags=markdown_tags, attributes=markdown_attrs)
+    return Markup(clean_html)
+
+
+def unserialize_user_flag(user_flag, *, secret=None):
+    if secret is None:
+        secret = current_app.config["SECRET_KEY"]
+    user_flag = re.sub(".+?{(.+)}", r"\1", user_flag)[::-1]
+    serializer = URLSafeSerializer(secret)
+    account_id, challenge_id = serializer.loads(user_flag)
+    return account_id, challenge_id
+
+
+def resolved_tar(dir, *, root_dir, filter=None):
+    tar_buffer = io.BytesIO()
+    tar = tarfile.open(fileobj=tar_buffer, mode='w')
+    resolved_root_dir = root_dir.resolve()
+    for path in dir.rglob("*"):
+        if filter is not None and not filter(path):
+            continue
+        relative_path = path.relative_to(dir)
+        if path.is_symlink():
+            resolved_path = path.resolve()
+            assert resolved_path.is_relative_to(resolved_root_dir), f"The symlink {path} points outside of the root directory"
+            tar.add(resolved_path, arcname=relative_path)
+        else:
+            tar.add(path, arcname=relative_path, recursive=False)
+    tar_buffer.seek(0)
+    return tar_buffer
+
+
+def module_visible(dojo, module, user):
+    return (
+        "time_visible" not in module or
+        module["time_visible"] <= datetime.datetime.now(pytz.utc) or
+        is_dojo_admin(user, dojo)
+    )
+
+
+def module_challenges_visible(dojo, module, user):
+    return (
+        "time_assigned" not in module or
+        module["time_assigned"] <= datetime.datetime.now(pytz.utc) or
+        is_dojo_admin(user, dojo)
+    )
+
+
+def is_dojo_admin(user, dojo):
+    return user and dojo and dojo.is_admin(user)
+
+
+def user_dojos(user):
+    filters = [Dojos.official == True]
+    if user:
+        members = db.session.query(DojoMembers.dojo_id).filter(DojoMembers.user_id == user.id)
+        filters.append(Dojos.id.in_(members.subquery()))
+        admins = db.session.query(DojoAdmins.dojo_id).filter(DojoAdmins.user_id == user.id)
+        filters.append(Dojos.id.in_(admins.subquery()))
+    return Dojos.query.filter(or_(*filters)).all()
+
+
+def dojo_standings(dojo_id=None, fields=None, module_id=None):
+    if fields is None:
+        fields = []
+
+    Model = get_model()
+
+    dojo_filters = []
+    if dojo_id is None:
+        dojos = Dojos.query.filter_by(official=True).all()
+        dojo_filters.append(or_(*(dojo.challenges_query(module_id=module_id) for dojo in dojos)))
+    else:
+        dojo = Dojos.query.filter(Dojos.id == dojo_id).first()
+        dojo_filters.append(dojo.challenges_query(module_id=module_id))
+
+        if not dojo.public:
+            members = db.session.query(DojoMembers.user_id).filter_by(dojo_id=dojo_id)
+            dojo_filters.append(Solves.account_id.in_(members.subquery()))
+
+    standings_query = (
+        db.session.query(*fields)
+        .join(Challenges)
+        .join(Model, Model.id == Solves.account_id)
+        .filter(Challenges.value != 0, Model.banned == False, Model.hidden == False,
+                *dojo_filters)
+    )
+
+    return standings_query
+
+
+def load_dojo(dojo_id, dojo_spec, user=None, dojo_dir=None, commit=True, log=logging.getLogger(__name__), initial_join_code=None):
+    log.info("Initiating dojo load.")
+
+    dojo = Dojos.query.filter_by(id=dojo_id).first()
+    if not dojo:
+        dojo = Dojos(id=dojo_id, owner_id=None if not user else user.id, data=dojo_spec)
+        dojo.join_code = initial_join_code
+        log.info("Dojo is new, adding.")
+        db.session.add(dojo)
+    elif dojo.data == dojo_spec:
+        # make sure the previous load was fully successful (e.g., all the imports worked and weren't fixed since then)
+        num_loaded_chals = DojoChallenges.query.filter_by(dojo_id=dojo_id).count()
+        num_spec_chals = sum(len(module.get("challenges", [])) for module in dojo.config.get("modules", []))
+
+        if num_loaded_chals == num_spec_chals:
+            log.warning("Dojo is unchanged, aborting update.")
+            return
+    else:
+        dojo.data = dojo_spec
+        db.session.add(dojo)
+
+    if dojo.config.get("dojo_spec", None) != "v2":
+        log.warning("Incorrect dojo spec version (dojo_spec attribute). Should be 'v2'")
+
+    dojo.apply_spec(dojo_log=log, dojo_dir=dojo_dir)
+
+    if commit:
+        log.info("Committing database changes!")
+        db.session.commit()
+    else:
+        log.info("Rolling back database changes!")
+        db.session.rollback()
+
+
+def first_bloods():
+    first_blood_string = db.func.min(Solves.date.cast(String)+"|"+Solves.user_id.cast(String))
+    first_blood_query = (
+        db.session.query(Challenges.id.label("challenge_id"))
+        .join(Solves, Challenges.id == Solves.challenge_id)
+        .add_columns(
+            db.func.substring_index(first_blood_string, "|", -1).cast(Integer).label("user_id"),
+            db.func.min(Solves.date).label("timestamp")
+        )
+        .group_by(Challenges.id)
+        .order_by("timestamp")
+    ).all()
+    return first_blood_query
+
+
+def daily_solve_counts():
+    counts = (
+        db.session.query(
+            Solves.user_id, db.func.count(Solves.challenge_id).label("solves"),
+            db.func.year(Solves.date).label("year"),
+            db.func.month(Solves.date).label("month"),
+            db.func.day(Solves.date).label("day")
+        )
+        .join(Challenges, Challenges.id == Solves.challenge_id)
+        .filter(~Challenges.category.contains("embryo"))
+        .group_by("year", "month", "day", Solves.user_id)
+    ).all()
+    return counts
+
+
+# https://github.com/CTFd/CTFd/blob/3.6.0/CTFd/utils/security/auth.py#L51-L59
+def lookup_workspace_token(token):
+    token = WorkspaceTokens.query.filter_by(value=token).first()
+    if token:
+        if datetime.datetime.utcnow() >= token.expiration:
+            raise UserTokenExpiredException
+        return token.user
+    else:
+        raise UserNotFoundException
+    return None
+
+
+# https://github.com/CTFd/CTFd/blob/3.6.0/CTFd/utils/security/auth.py#L37-L48
+def generate_workspace_token(user, expiration=None):
+    temp_token = True
+    while temp_token is not None:
+        value = "workspace_" + hexencode(os.urandom(32))
+        temp_token = WorkspaceTokens.query.filter_by(value=value).first()
+
+    token = WorkspaceTokens(
+        user_id=user.id, expiration=expiration, value=value
+    )
+    db.session.add(token)
+    db.session.commit()
+    return token
+
+
+# based on https://stackoverflow.com/questions/36408496/python-logging-handler-to-append-to-list
+class ListHandler(logging.Handler): # Inherit from logging.Handler
+    def __init__(self, log_list):
+        logging.Handler.__init__(self)
+        self.log_list = log_list
+
+    def emit(self, record):
+        self.log_list.append(record.levelname + ": " + record.getMessage())
+
+class HTMLHandler(logging.Handler): # Inherit from logging.Handler
+    def __init__(self, start_tag="<code>", end_tag="</code>", join_tag="<br>"):
+        logging.Handler.__init__(self)
+        self.html = ""
+        self.start_tag = start_tag
+        self.end_tag = end_tag
+        self.join_tag = join_tag
+
+    def reset(self):
+        self.html = ""
+
+    def emit(self, record):
+        if self.html:
+            self.html += self.join_tag
+        self.html += f"{self.start_tag}<b>{record.levelname}</b>: {sanitize_html(record.getMessage())}{self.end_tag}"
+

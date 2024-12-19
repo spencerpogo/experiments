@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% from "macros/widgets.html" import accordion_item %}
+
+{% block content %}
+<div class="jumbotron">
+  <div class="container">
+    <h1>{{ module.name or module.id }}</h1>
+    <br>
+    <h2 class="module-dojo"><a href="{{ url_for('pwncollege_dojo.view_dojo', dojo=dojo.reference_id) }}">{{ dojo.name or dojo.id }}</a></h2>
+
+    {% if assessments %}
+    <br>
+    {% for assessment in assessments %}
+    <h3 class="module-due-date" title="{{ assessment.date }}">{{ assessment.name }} in {{ assessment.until }}</h3>
+    {% endfor %}
+    {% endif %}
+  </div>
+</div>
+<div class="container">
+
+  {% if module.description %}
+  <p>{{ module.description | markdown }}</p>
+  <br>
+  {% endif %}
+
+  {% if module.resources %}
+  <h2>Lectures and Reading</h2>
+
+  <div class="accordion" id="resources">
+    {% for resource in module.resources %}
+      {% call(header) accordion_item("resources", loop.index) %}
+        {% if header %}
+          <h4 class="accordion-item-name">{{ resource.name }}</h4>
+        {% else %}
+          {% if resource.type == "lecture" %}
+          {% if resource.video %}
+          {% set src = "https://www.youtube.com/embed/" + resource.video + "?" + ("list=" + resource.playlist + "&" if resource.playlist else "") + "rel=0" %}
+          <div class="embed-responsive embed-responsive-16by9">
+            <iframe class="embed-responsive-item" data-src="{{ src }}" title="YouTube video player" allowfullscreen></iframe>
+          </div>
+          {% endif %}
+          {% if resource.slides %}
+          {% set src = "https://docs.google.com/presentation/d/" + resource.slides + "/embed" %}
+          <div class="embed-responsive embed-responsive-16by9">
+            <iframe class="embed-responsive-item" data-src="{{ src }}"></iframe>
+          </div>
+          <button onclick="window.open('{{ src.replace('/embed', '') }}', '_blank')" class="btn btn-primary">Open Slides in New Window</button>
+          {% endif %}
+
+          {% elif resource.type == "markdown" %}
+          <div class="embed-responsive">
+            {{ resource.content | markdown }}
+          </div>
+          {% endif %}
+        {% endif %}
+      {% endcall %}
+    {% endfor %}
+  </div>
+
+  <br>
+  {% endif %}
+
+  {% if challenges %}
+  <h2>Challenges</h2>
+
+  <div class="accordion" id="challenges">
+    {% for challenge in challenges %}
+      {% set solved = "challenge-solved" if challenge.challenge_id in user_solves else "challenge-unsolved" %}
+      {% set active = "challenge-active" if challenge.challenge_id == current_dojo_challenge.challenge_id else "" %}
+      {% call(header) accordion_item("challenges", loop.index) %}
+        {% if header %}
+          <h4 class="accordion-item-name challenge-name {{ active }}">
+            <span class="d-sm-block d-md-block d-lg-block">
+              <i class="fas fa-flag pr-3 {{ solved }}"></i>{{ challenge.name or challenge.id }}
+              {% if not challenge.visible() %}
+              <small><small><small>
+                    <i>hidden</i> &mdash; you can see this because you are this dojo's administrator
+              </small></small></small>
+              {% endif %}
+            </span>
+          </h4>
+          <span class="challenge-header-right">
+            {% if challenge_container_counts.get(challenge.id, 0) > 0 %}
+            <span class="total-hackers">
+              {{ challenge_container_counts.get(challenge.id, 0) }} hacking,
+            </span>
+            {% endif %}
+            <span class="total-solves">
+              {{ total_solves.get(challenge.challenge_id, 0) }} solves
+            </span>
+          </span>
+        {% else %}
+          <div class="embed-responsive">
+            <p>{{ challenge.description | markdown }}</p>
+          </div>
+          <div class="row">
+            <div class="col-sm-{% if challenge.allow_privileged %}6{% else %}12{% endif %} form-group text-center">
+              <button id="challenge-start" type="submit" class="btn btn-md btn-outline-secondary w-100">
+                <span class="d-sm-block d-md-block d-lg-block">
+                  <i class="fas fa-play fa-2x pr-3"></i>Start
+                </span>
+              </button>
+            </div>
+            {% if challenge.allow_privileged %}
+            <div class="col-sm-6 form-group text-center">
+              <button id="challenge-practice" type="submit" class="btn btn-md btn-outline-secondary w-100">
+                <span class="d-sm-block d-md-block d-lg-block">
+                  <i class="fas fa-flask fa-2x pr-3"></i>Practice
+                </span>
+              </button>
+            </div>
+            {% endif %}
+          </div>
+          <div class="row submit-row">
+            <div class="col-md-9 form-group">
+              <input id="module" type="hidden" value="{{ challenge.module.id }}">
+              <input id="challenge" type="hidden" value="{{ challenge.id }}">
+              <input id="challenge-id" type="hidden" value="{{ challenge.challenge_id }}">
+              <input id="challenge-input" class="challenge-input form-control" type="text" name="answer" placeholder="Flag">
+            </div>
+            <div class="col-md-3 form-group key-submit">
+              <button id="challenge-submit" type="submit" class="challenge-submit btn btn-md btn-outline-secondary float-right w-100 h-100">
+                Submit
+              </button>
+            </div>
+          </div>
+          <div class="row notification-row">
+	          <div class="col-md-12">
+	            <div id="result-notification" class="alert alert-dismissable text-center w-100" role="alert" style="display: none;">
+		            <strong id="result-message"></strong>
+	            </div>
+	          </div>
+	        </div>
+        {% endif %}
+      {% endcall %}
+    {% endfor %}
+  </div>
+
+  <br>
+
+  <h2>Ranking</h2>
+  <p>This scoreboard reflects solves for challenges in this module after the module launched in this dojo.</p>
+  {% from "macros/scoreboard.html" import scoreboard %}
+  {{ scoreboard() }}
+
+  {% endif %}
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script defer src="{{ url_for('views.themes', path='js/dojo/challenges.js') }}"></script>
+<script defer onload="loadScoreboard(30, 1);" src="{{ url_for('views.themes', path='js/dojo/scoreboard.js') }}"></script>
+{% endblock %}
