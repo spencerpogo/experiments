@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% from "macros/widgets.html" import card %}
+
+{% block content %}
+<div class="jumbotron">
+  <div class="container">
+    <h1>{{ dojo.name or dojo.id }}</h1>
+  </div>
+</div>
+<div class="container">
+  {% include "components/errors.html" %}
+
+  {% if dojo.description %}
+  <p>{{ dojo.description | markdown }}</p>
+  <br>
+  {% endif %}
+
+  <div class="row text-center">
+    {% if dojo.course and user %}
+    <div class="col-lg-auto m-3">
+      <figure>
+        <a class="text-decoration-none" href="{{ url_for('course.view_course', dojo=dojo.reference_id) }}">
+          <i class="fas fa-graduation-cap fa-3x"></i>
+          <figcaption><b style="font-family: 'Courier New', Courier, monospace">Course</b></figcaption>
+        </a>
+      </figure>
+    </div>
+    {% endif %}
+    {% if dojo_user.type == "admin" or user.type == "admin" %}
+    <div class="col-lg-auto m-3">
+      <figure>
+        <a class="text-decoration-none" href="{{ url_for('pwncollege_dojo.view_dojo_admin', dojo=dojo.reference_id) }}">
+          <i class="fas fa-users-cog fa-3x"></i>
+          <figcaption><b style="font-family: 'Courier New', Courier, monospace">Admin</b></figcaption>
+        </a>
+      </figure>
+    </div>
+    {% endif %}
+  </div>
+
+  <br>
+
+  {% if dojo.award and dojo.award.get("emoji") %}
+  <h2 class="row">Award: <b>{{ dojo.award["emoji"] }}</b></h2>
+  <br>
+  {% endif %}
+
+  {% if dojo.modules %}
+  <h2 class="row">Stats</h2>
+  <br>
+  <div class="row">
+    <p>
+      <b>Hacking Now:</b> <code>{{ stats["active"] }}</code>
+      <br>
+      <b>Hackers:</b> <code>{{ "{:,}".format(stats["users"]) }}</code>
+      <br>
+      <b>Challenges:</b> <code>{{ stats["challenges"] }}</code>
+      <br>
+      <b>Solves:</b> <code>{{ "{:,}".format(stats["solves"]) }}</code>
+      {% if awards %}
+      <br>
+      <b>Awardees:</b> <code>{{ "{:,}".format(awards|length) }}</code>
+      <br>
+      <b>Earliest Awardees:</b>
+      {% for award in awards[-5:][::-1] %}
+      <span title="Awarded on {{award.date}}.">
+        <code>
+          <a href="{{ url_for('pwncollege_users.view_other', user_id=award.user_id) }}">
+            {{award.user.name}}
+          </a>
+          {% if not loop.last %} &middot; {% endif %}
+        </code>
+      </span>
+      {% endfor %}
+      <br>
+      <b>Latest Awardees:</b>
+      {% for award in awards[:5] %}
+      <span title="Awarded on {{award.date}}.">
+        <code>
+          <a href="{{ url_for('pwncollege_users.view_other', user_id=award.user_id) }}">
+            {{award.user.name}}
+          </a>
+          {% if not loop.last %} &middot; {% endif %}
+        </code>
+      </span>
+      {% endfor %}
+      {% endif %}
+    </p>
+  </div>
+
+  <br>
+
+  <h2 class="row">Modules</h2>
+  <br>
+  <ul class="card-list">
+    {% for module in dojo.modules %}
+    {% set container_count = module_container_counts.get(module.id, 0) %}
+    {% set num_challs = module.visible_challenges() | length %}
+    {% set num_solved = module.solves(user=user, ignore_visibility=True, ignore_admins=False).count() if user else 0 %}
+    {{ card(
+      url_for('pwncollege_dojo.view_dojo_path', dojo=dojo_id, path=module.id),
+      title=module.name or module.id,
+      text_lines = [
+        "{} Hacking".format(container_count) if container_count > 0 else "",
+        "{} / {}".format(
+          module.solves(user=user, ignore_visibility=True, ignore_admins=False).count() if user else 0,
+          module.visible_challenges() | length
+        )
+      ],
+      solve_percent=(num_solved / num_challs) * 100 if num_challs else 0,
+    ) }}
+    {% endfor %}
+  </ul>
+
+  <br>
+
+  <h2 class="row">Rankings:</h2>
+  <br>
+  {% from "macros/scoreboard.html" import scoreboard %}
+  {{ scoreboard() }}
+
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script defer onload="loadScoreboard(30, 1);" src="{{ url_for('views.themes', path='js/dojo/scoreboard.js') }}"></script>
+<script defer src="{{ url_for('views.themes', path='js/dojo/copy.js') }}"></script>
+{% endblock %}

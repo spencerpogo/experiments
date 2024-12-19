@@ -1,0 +1,14 @@
+[Unit]
+Description=pwn.college docker compose service
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+WorkingDirectory=/opt/pwn.college
+ExecStart=/usr/bin/dojo up
+ExecStop=/usr/bin/dojo compose down
+
+[Install]
+WantedBy=multi-user.target
