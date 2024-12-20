@@ -12,6 +12,7 @@ class ClassArchiverItem(scrapy.Item):
     pass
 
 class ModuleItem(scrapy.Item):
+    course_id = scrapy.Field()
     id = scrapy.Field()
     name = scrapy.Field()
     position = scrapy.Field()
@@ -20,6 +21,7 @@ class ModuleItem(scrapy.Item):
 
 
 class ModuleSubitemItem(scrapy.Item):
+    course_id = scrapy.Field()
     id = scrapy.Field()
     title = scrapy.Field()
     position = scrapy.Field()
@@ -33,7 +35,7 @@ class ModuleSubitemItem(scrapy.Item):
 
 class CanvasFileItem(scrapy.Item):
     course_id = scrapy.Field()
-    file_id = scrapy.Field()
+    id = scrapy.Field()
     filename = scrapy.Field()
     download_url = scrapy.Field()
     file_path = scrapy.Field()
