@@ -3,25 +3,36 @@
 # Don't forget to add your pipeline to the ITEM_PIPELINES setting
 # See: https://docs.scrapy.org/en/latest/topics/item-pipeline.html
 
+import re
 
 # useful for handling different item types with a single interface
 from itemadapter import ItemAdapter
 import scrapy
+from scrapy.pipelines.files import FilesPipeline
 from scrapy.http.request import NO_CALLBACK
 
 from .items import CanvasFileItem
+from .spiders.canvas import CanvasModulesSpider
 
 
-class ClassArchiverPipeline:
+class CanvasFilesPipeline(FilesPipeline):
     def get_media_requests(self, item, info):
         if isinstance(item, CanvasFileItem):
-            yield scrapy.Request(item["download_url"], callback=NO_CALLBACK)
+            assert isinstance(
+                info.spider, CanvasModulesSpider
+            ), f"unknown spider {info.spider!r} returned CanvasFileItem"
+            yield scrapy.Request(
+                item["download_url"],
+                headers={"Authorization": f"Bearer {info.spider.token}"},
+                dont_filter=True, # allow redirects to offsite domains
+                callback=NO_CALLBACK,
+            )
         return []
 
     def file_path(self, request, response=None, info=None, *, item=None):
         clean_filename = re.sub(r"[/\\?%*:|\"<>\x7F\x00-\x1F]", "-", item["filename"])
-        return f"canvas-files/{item['course_id']}/{item['file_id']}_{clean_filename}"
-    
+        return f"canvas-files/{item['course_id']}/{item['id']}_{clean_filename}"
+
     def item_completed(self, results, item, info):
         if isinstance(item, CanvasFileItem):
             ok_results = [r for ok, r in results if ok]
