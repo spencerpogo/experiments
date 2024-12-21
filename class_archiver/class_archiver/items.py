@@ -11,6 +11,7 @@ class ClassArchiverItem(scrapy.Item):
     # name = scrapy.Field()
     pass
 
+
 class ModuleItem(scrapy.Item):
     course_id = scrapy.Field()
     id = scrapy.Field()

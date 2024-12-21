@@ -24,7 +24,7 @@ class CanvasFilesPipeline(FilesPipeline):
             yield scrapy.Request(
                 item["download_url"],
                 headers={"Authorization": f"Bearer {info.spider.token}"},
-                dont_filter=True, # allow redirects to offsite domains
+                dont_filter=True,  # allow redirects to offsite domains
                 callback=NO_CALLBACK,
             )
         return []

@@ -63,7 +63,7 @@ ROBOTSTXT_OBEY = False
 # Configure item pipelines
 # See https://docs.scrapy.org/en/latest/topics/item-pipeline.html
 ITEM_PIPELINES = {
-   "class_archiver.pipelines.CanvasFilesPipeline": 800,
+    "class_archiver.pipelines.CanvasFilesPipeline": 800,
 }
 MEDIA_ALLOW_REDIRECTS = True
 FILES_STORE = "files"
