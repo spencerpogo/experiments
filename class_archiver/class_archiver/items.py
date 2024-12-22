@@ -24,7 +24,7 @@ class ModuleSubitemItem(scrapy.Item):
     id = scrapy.Field()
     title = scrapy.Field()
     position = scrapy.Field()
-    indent = scrapy.Field() # 0-based
+    indent = scrapy.Field()  # 0-based
     type = scrapy.Field()
     module_id = scrapy.Field()
     content_id = scrapy.Field()
@@ -42,3 +42,5 @@ class CanvasAssignmentItem(scrapy.Item):
     name = scrapy.Field()
     description = scrapy.Field()
     due_at = scrapy.Field()
+    quiz_id = scrapy.Field()
+    discussion_topic = scrapy.Field()

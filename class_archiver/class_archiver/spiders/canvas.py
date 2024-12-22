@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import scrapy
+from scrapy.selector import Selector
 
 from ..items import CanvasAssignmentItem, CanvasFileItem, ModuleItem, ModuleSubitemItem
 
@@ -112,9 +113,8 @@ class CanvasModulesSpider(scrapy.Spider):
                 yield self.canvas_request(it["url"], self.parse_assignment)
 
             r = ModuleSubitemItem()
-            r["course_id"] = self.course_id
             if ty in {"File", "Discussion", "Assignment", "Quiz", "ExternalTool"}:
-                r["content_id"] = r["content_id"]
+                r["content_id"] = it["content_id"]
             elif ty not in {"Page", "SubHeader", "ExternalUrl"}:
                 raise AssertionError(
                     f"unexpected module item type: {it['type']!r} {it}"
@@ -147,24 +147,39 @@ class CanvasModulesSpider(scrapy.Spider):
 
     def parse_assignment(self, response):
         assignment = response.json()
-        desc = Selector(text=assignment["description"])
-        for f in desc.css(".instructure_file_link"):
+        desc = assignment["description"]
+        for f in Selector(text=desc).css(".instructure_file_link"):
             # could just fetch the URL in data-api-endpoint and pass it to parse_file
             #  but we can save a request by parsing the HTML attributes directly
             assert (
                 f.attrib["data-api-returntype"] == "File"
             ), f"unexpected data-api-returntype: {f.attrib!r}"
-            it = CanvasFileItem()
-            endpoint_parts = assignment["data-api-endpoint"].split(
-                f"/courses/{course_id}/files/"
-            )
+
+            endpoint = f.attrib["data-api-endpoint"]
+            endpoint_parts = endpoint.split(f"/courses/{self.course_id}/files/")
             assert (
                 len(endpoint_parts) == 2
-            ), f"unexpected data-api-endpoint format: {assignment['data-api-endpoint']!r}"
+            ), f"unexpected data-api-endpoint format: {endpoint!r}"
             _, file_id = endpoint_parts
-            it.id = int(file_id)
-            it.filename = f.attrib["title"]
-            it.download_url = f.attrib["href"]
+
+            # in the (rare) case that we cannot extract the filename from the HTML
+            #  attributes, we can fall back to hitting the API
+            if "title" not in f.attrib:
+                self.stats.inc_value("canvas/file_links_no_title")
+                yield self.canvas_request(endpoint, self.parse_file)
+                continue
+            self.stats.inc_value("canvas/file_links_with_title")
+
+            it = CanvasFileItem()
+            it["id"] = int(file_id)
+            it["filename"] = f.attrib["title"]
+            it["download_url"] = f.attrib["href"]
             yield it
 
         r = CanvasAssignmentItem()
+        for k in {"id", "name", "description", "due_at"}:
+            r[k] = assignment[k]
+        for k in {"quiz_id", "discussion_topic"}:
+            if k in assignment:
+                r[k] = assignment[k]
+        yield r

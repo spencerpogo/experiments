@@ -30,8 +30,10 @@ class CanvasFilesPipeline(FilesPipeline):
         return []
 
     def file_path(self, request, response=None, info=None, *, item=None):
+        assert isinstance(info.spider, CanvasModulesSpider)
+        course_id = info.spider.course_id
         clean_filename = re.sub(r"[/\\?%*:|\"<>\x7F\x00-\x1F]", "-", item["filename"])
-        return f"canvas-files/{item['course_id']}/{item['id']}_{clean_filename}"
+        return f"canvas-files/{course_id}/{item['id']}_{clean_filename}"
 
     def item_completed(self, results, item, info):
         if isinstance(item, CanvasFileItem):
