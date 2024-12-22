@@ -164,7 +164,7 @@ class CanvasModulesSpider(scrapy.Spider):
 
             # in the (rare) case that we cannot extract the filename from the HTML
             #  attributes, we can fall back to hitting the API
-            if "title" not in f.attrib:
+            if "title" not in f.attrib or f.attrib["title"] == "Link":
                 self.stats.inc_value("canvas/file_links_no_title")
                 yield self.canvas_request(endpoint, self.parse_file)
                 continue
