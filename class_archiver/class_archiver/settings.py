@@ -68,6 +68,24 @@ ITEM_PIPELINES = {
 MEDIA_ALLOW_REDIRECTS = True
 FILES_STORE = "files"
 
+FEEDS = {
+    "export-%(course_id)s/modules.jsonl": {
+        "format": "jsonlines",
+        "item_classes": ["class_archiver.items.ModuleItem"],
+        "overwrite": True,
+    },
+    "export-%(course_id)s/module-items.jsonl": {
+        "format": "jsonlines",
+        "item_classes": ["class_archiver.items.ModuleSubitemItem"],
+        "overwrite": True,
+    },
+    "export-%(course_id)s/files.jsonl": {
+        "format": "jsonlines",
+        "item_classes": ["class_archiver.items.CanvasFileItem"],
+        "overwrite": True,
+    },
+}
+
 # Enable and configure the AutoThrottle extension (disabled by default)
 # See https://docs.scrapy.org/en/latest/topics/autothrottle.html
 # AUTOTHROTTLE_ENABLED = True

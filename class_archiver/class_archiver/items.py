@@ -13,7 +13,6 @@ class ClassArchiverItem(scrapy.Item):
 
 
 class ModuleItem(scrapy.Item):
-    course_id = scrapy.Field()
     id = scrapy.Field()
     name = scrapy.Field()
     position = scrapy.Field()
@@ -22,21 +21,24 @@ class ModuleItem(scrapy.Item):
 
 
 class ModuleSubitemItem(scrapy.Item):
-    course_id = scrapy.Field()
     id = scrapy.Field()
     title = scrapy.Field()
     position = scrapy.Field()
-    indent = scrapy.Field()
+    indent = scrapy.Field() # 0-based
     type = scrapy.Field()
     module_id = scrapy.Field()
-    html_url = scrapy.Field()
     content_id = scrapy.Field()
-    url = scrapy.Field()
 
 
 class CanvasFileItem(scrapy.Item):
-    course_id = scrapy.Field()
     id = scrapy.Field()
     filename = scrapy.Field()
     download_url = scrapy.Field()
     file_path = scrapy.Field()
+
+
+class CanvasAssignmentItem(scrapy.Item):
+    id = scrapy.Field()
+    name = scrapy.Field()
+    description = scrapy.Field()
+    due_at = scrapy.Field()

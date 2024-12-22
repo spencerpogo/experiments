@@ -1,8 +1,9 @@
+import logging
 import os
 import re
 import scrapy
 
-from ..items import CanvasFileItem
+from ..items import CanvasAssignmentItem, CanvasFileItem, ModuleItem, ModuleSubitemItem
 
 
 # taken from https://github.com/psf/requests/blob/23540c93cac97c763fe59e843a08fa2825aa80fd/src/requests/utils.py#L917
@@ -47,6 +48,8 @@ class CanvasModulesSpider(scrapy.Spider):
     allowed_domains = []
 
     def __init__(self, *args, **kwargs):
+        for mod in {"scrapy.downloadermiddlewares.redirect", "scrapy.core.scraper"}:
+            logging.getLogger(mod).setLevel(logging.WARN)
         super(CanvasModulesSpider, self).__init__(*args, **kwargs)
         self.allowed_domains = [self.canvas_domain]
         self.token = os.environ["CANVAS_TOKEN"]
@@ -83,32 +86,49 @@ class CanvasModulesSpider(scrapy.Spider):
         for mod in modules:
             assert mod["unlock_at"] is None, f"unhandled unlock_at in {mod!r}"
             module_id = mod["id"]
-            yield self.canvas_request(
-                mod["items_url"],
-                self.parse_module_items,
-                cb_kwargs={"module": mod},
+            yield self.canvas_request(mod["items_url"], self.parse_module_items)
+            yield ModuleItem(
+                id=int(module_id),
+                name=mod["name"],
+                position=mod["position"],
+                items_count=mod["items_count"],
+                items_url=mod["items_url"],
             )
 
-    def parse_module_items(self, response, module):
+        links = parse_header_links(response.headers.get("link", "").decode())
+        next_links = [l for l in links if l.get("rel") == "next"]
+        assert len(next_links) <= 1, f"got multiple next links: {links!r}"
+        if next_links:
+            yield self.canvas_request(next_links[0]["url"], self.parse_modules_list)
+
+    def parse_module_items(self, response):
         items = response.json()
         assert isinstance(items, list), f"expected items list, got {items!r}"
         for it in items:
             ty = it["type"]
             if ty == "File":
                 yield self.canvas_request(it["url"], self.parse_file)
-            else:
-                # raise NotImplementedError(f"Item type {ty!r} not implemented")
-                continue
+            elif ty == "Assignment":
+                yield self.canvas_request(it["url"], self.parse_assignment)
+
+            r = ModuleSubitemItem()
+            r["course_id"] = self.course_id
+            if ty in {"File", "Discussion", "Assignment", "Quiz", "ExternalTool"}:
+                r["content_id"] = r["content_id"]
+            elif ty not in {"Page", "SubHeader", "ExternalUrl"}:
+                raise AssertionError(
+                    f"unexpected module item type: {it['type']!r} {it}"
+                )
+
+            for k in {"title", "position", "indent", "type"}:
+                r[k] = it[k]
+            yield r
 
         links = parse_header_links(response.headers.get("link", "").decode())
         next_links = [l for l in links if l.get("rel") == "next"]
         assert len(next_links) <= 1, f"got multiple next links: {links!r}"
         if next_links:
-            yield self.canvas_request(
-                next_links[0]["url"],
-                self.parse_module_items,
-                cb_kwargs={"module": module},
-            )
+            yield self.canvas_request(next_links[0]["url"], self.parse_module_items)
 
     def parse_file(self, response):
         f = response.json()
@@ -117,7 +137,6 @@ class CanvasModulesSpider(scrapy.Spider):
             "url" in f
         ), f"missing download url: {__import__('json').dumps(f, indent=4)}"
         return CanvasFileItem(
-            course_id=self.course_id,
             id=f["id"],
             # in general "filename" is the URL-encoded version of "display_name"
             # we'll change the semantics slightly for our purposes (we are fine with
@@ -135,7 +154,7 @@ class CanvasModulesSpider(scrapy.Spider):
             assert (
                 f.attrib["data-api-returntype"] == "File"
             ), f"unexpected data-api-returntype: {f.attrib!r}"
-            course_id = assignment["course_id"]
+            it = CanvasFileItem()
             endpoint_parts = assignment["data-api-endpoint"].split(
                 f"/courses/{course_id}/files/"
             )
@@ -143,12 +162,9 @@ class CanvasModulesSpider(scrapy.Spider):
                 len(endpoint_parts) == 2
             ), f"unexpected data-api-endpoint format: {assignment['data-api-endpoint']!r}"
             _, file_id = endpoint_parts
-            file_id = int(file_id)
-            filename = f.attrib["title"]
-            download_url = f.attrib["href"]
-            yield CanvasFileItem(
-                course_id=course_id,
-                id=file_id,
-                filename=filename,
-                download_url=download_url,
-            )
+            it.id = int(file_id)
+            it.filename = f.attrib["title"]
+            it.download_url = f.attrib["href"]
+            yield it
+
+        r = CanvasAssignmentItem()
