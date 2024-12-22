@@ -50,7 +50,7 @@ class CanvasModulesSpider(scrapy.Spider):
 
     def __init__(self, *args, **kwargs):
         for mod in {"scrapy.downloadermiddlewares.redirect", "scrapy.core.scraper"}:
-            logging.getLogger(mod).setLevel(logging.WARN)
+            logging.getLogger(mod).setLevel(logging.INFO)
         super(CanvasModulesSpider, self).__init__(*args, **kwargs)
         self.allowed_domains = [self.canvas_domain]
         self.token = os.environ["CANVAS_TOKEN"]
@@ -160,21 +160,7 @@ class CanvasModulesSpider(scrapy.Spider):
             assert (
                 len(endpoint_parts) == 2
             ), f"unexpected data-api-endpoint format: {endpoint!r}"
-            _, file_id = endpoint_parts
-
-            # in the (rare) case that we cannot extract the filename from the HTML
-            #  attributes, we can fall back to hitting the API
-            if "title" not in f.attrib or f.attrib["title"] == "Link":
-                self.stats.inc_value("canvas/file_links_no_title")
-                yield self.canvas_request(endpoint, self.parse_file)
-                continue
-            self.stats.inc_value("canvas/file_links_with_title")
-
-            it = CanvasFileItem()
-            it["id"] = int(file_id)
-            it["filename"] = f.attrib["title"]
-            it["download_url"] = f.attrib["href"]
-            yield it
+            yield self.canvas_request(endpoint, self.parse_file)
 
         r = CanvasAssignmentItem()
         for k in {"id", "name", "description", "due_at"}:
