@@ -45,7 +45,7 @@ ROBOTSTXT_OBEY = False
 # Enable or disable spider middlewares
 # See https://docs.scrapy.org/en/latest/topics/spider-middleware.html
 SPIDER_MIDDLEWARES = {
-   "class_archiver.middlewares.StatsPasserSpiderMiddleware": 543,
+    "class_archiver.middlewares.StatsPasserSpiderMiddleware": 543,
 }
 
 # Enable or disable downloader middlewares
