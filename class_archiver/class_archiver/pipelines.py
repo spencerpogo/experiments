@@ -23,7 +23,7 @@ class CanvasFilesPipeline(FilesPipeline):
             ), f"unknown spider {info.spider!r} returned CanvasFileItem"
             yield scrapy.Request(
                 item["download_url"],
-                headers={"Authorization": f"Bearer {info.spider.token}"},
+                headers=info.spider.canvas.auth_headers(),
                 dont_filter=True,  # allow redirects to offsite domains
                 callback=NO_CALLBACK,
             )

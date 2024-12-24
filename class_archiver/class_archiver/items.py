@@ -44,3 +44,10 @@ class CanvasAssignmentItem(scrapy.Item):
     due_at = scrapy.Field()
     quiz_id = scrapy.Field()
     discussion_topic = scrapy.Field()
+
+
+class PanoptoSession(scrapy.Item):
+    id = scrapy.Field()
+    name = scrapy.Field()
+    ios_video_url = scrapy.Field()
+    srt_url = scrapy.Field()

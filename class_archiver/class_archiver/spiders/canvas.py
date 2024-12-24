@@ -1,47 +1,10 @@
 import logging
-import os
-import re
+
 import scrapy
 from scrapy.selector import Selector
 
+from ..canvas import CanvasScrapyClient
 from ..items import CanvasAssignmentItem, CanvasFileItem, ModuleItem, ModuleSubitemItem
-
-
-# taken from https://github.com/psf/requests/blob/23540c93cac97c763fe59e843a08fa2825aa80fd/src/requests/utils.py#L917
-def parse_header_links(value):
-    """Return a list of parsed link headers proxies.
-
-    i.e. Link: <http:/.../front.jpeg>; rel=front; type="image/jpeg",<http://.../back.jpeg>; rel=back;type="image/jpeg"
-
-    :rtype: list
-    """
-
-    links = []
-    replace_chars = " '\""
-
-    value = value.strip(replace_chars)
-    if not value:
-        return links
-
-    for val in re.split(", *<", value):
-        try:
-            url, params = val.split(";", 1)
-        except ValueError:
-            url, params = val, ""
-
-        link = {"url": url.strip("<> '\"")}
-
-        for param in params.split(";"):
-            try:
-                key, value = param.split("=")
-            except ValueError:
-                break
-
-            link[key.strip(replace_chars)] = value.strip(replace_chars)
-
-        links.append(link)
-
-    return links
 
 
 class CanvasModulesSpider(scrapy.Spider):
@@ -49,12 +12,9 @@ class CanvasModulesSpider(scrapy.Spider):
     allowed_domains = []
 
     def __init__(self, *args, **kwargs):
-        for mod in {"scrapy.downloadermiddlewares.redirect", "scrapy.core.scraper"}:
-            # logging.getLogger(mod).setLevel(logging.INFO)
-            pass
-        super(CanvasModulesSpider, self).__init__(*args, **kwargs)
-        self.allowed_domains = [self.canvas_domain]
-        self.token = os.environ["CANVAS_TOKEN"]
+        super().__init__(*args, **kwargs)
+        self.allowed_domains.append(self.canvas_domain)
+        self.canvas = CanvasScrapyClient.from_env_token(self.canvas_domain)
 
     @classmethod
     def update_settings(cls, settings):
@@ -62,45 +22,13 @@ class CanvasModulesSpider(scrapy.Spider):
         # ensure we never get rate limited
         settings.set("CONCURRENT_REQUESTS_PER_DOMAIN", 1, priority="spider")
 
-    def canvas_url(self):
-        return f"https://{self.canvas_domain.rstrip('/')}"
-
-    def canvas_endpoint(self, endpoint):
-        return self.canvas_url() + f"/api/v1/{endpoint}"
-
-    def auth_headers(self):
-        return {"Authorization": f"Bearer {self.token}"}
-
-    def canvas_json_request(self, url, callback, *args, **kwargs):
-        return scrapy.FormRequest(
-            url,
-            callback,
-            *args,
-            **kwargs,
-            headers={
-                **self.auth_headers(),
-                "Accept": "application/json, text/javascript, */*; q=0.01",
-                # I don't want to check the method to see whether we should set
-                #  Content-Type so I will simply not set it. god scrapy's request API
-                #  sucks
-            },
-        )
-
-    def canvas_form_request(self, url, callback, *args, **kwargs):
-        return scrapy.FormRequest(
-            url, callback, *args, **kwargs, headers=self.auth_headers()
-        )
-
     def start_requests(self):
-        # yield self.canvas_request(
-        #    self.canvas_endpoint(f"courses/{self.course_id}/modules"),
-        #    self.parse_modules_list,
-        # )
-        yield self.canvas_json_request(
-            self.canvas_endpoint(
-                f"courses/{self.course_id}/external_tools/visible_course_nav_tools"
-            ),
-            self.parse_panopto_nav_item,
+        for mod in {"scrapy.downloadermiddlewares.redirect", "scrapy.core.scraper"}:
+            # logging.getLogger(mod).setLevel(logging.INFO)
+            pass
+        yield self.canvas.request(
+            self.canvas.api_courses_endpoint(self.course_id, "/modules"),
+            self.parse_modules_list,
         )
 
     def parse_modules_list(self, response):
@@ -109,7 +37,7 @@ class CanvasModulesSpider(scrapy.Spider):
         for mod in modules:
             assert mod["unlock_at"] is None, f"unhandled unlock_at in {mod!r}"
             module_id = mod["id"]
-            yield self.canvas_json_request(mod["items_url"], self.parse_module_items)
+            yield self.canvas.request(mod["items_url"], self.parse_module_items)
             yield ModuleItem(
                 id=int(module_id),
                 name=mod["name"],
@@ -118,13 +46,7 @@ class CanvasModulesSpider(scrapy.Spider):
                 items_url=mod["items_url"],
             )
 
-        links = parse_header_links(response.headers.get("link", "").decode())
-        next_links = [l for l in links if l.get("rel") == "next"]
-        assert len(next_links) <= 1, f"got multiple next links: {links!r}"
-        if next_links:
-            yield self.canvas_json_request(
-                next_links[0]["url"], self.parse_modules_list
-            )
+        yield from self.canvas.follow_pagination(response, self.parse_modules_list)
 
     def parse_module_items(self, response):
         items = response.json()
@@ -132,9 +54,9 @@ class CanvasModulesSpider(scrapy.Spider):
         for it in items:
             ty = it["type"]
             if ty == "File":
-                yield self.canvas_json_request(it["url"], self.parse_file)
+                yield self.canvas.request(it["url"], self.parse_file)
             elif ty == "Assignment":
-                yield self.canvas_json_request(it["url"], self.parse_assignment)
+                yield self.canvas.request(it["url"], self.parse_assignment)
 
             r = ModuleSubitemItem()
             if ty in {"File", "Discussion", "Assignment", "Quiz", "ExternalTool"}:
@@ -148,13 +70,7 @@ class CanvasModulesSpider(scrapy.Spider):
                 r[k] = it[k]
             yield r
 
-        links = parse_header_links(response.headers.get("link", "").decode())
-        next_links = [l for l in links if l.get("rel") == "next"]
-        assert len(next_links) <= 1, f"got multiple next links: {links!r}"
-        if next_links:
-            yield self.canvas_json_request(
-                next_links[0]["url"], self.parse_module_items
-            )
+        yield from self.canvas.follow_pagination(response, self.parse_module_items)
 
     def parse_file(self, response):
         f = response.json()
@@ -186,7 +102,7 @@ class CanvasModulesSpider(scrapy.Spider):
             assert (
                 len(endpoint_parts) == 2
             ), f"unexpected data-api-endpoint format: {endpoint!r}"
-            yield self.canvas_json_request(endpoint, self.parse_file)
+            yield self.canvas.request(endpoint, self.parse_file)
 
         r = CanvasAssignmentItem()
         for k in {"id", "name", "description", "due_at"}:
@@ -195,44 +111,3 @@ class CanvasModulesSpider(scrapy.Spider):
             if k in assignment:
                 r[k] = assignment[k]
         yield r
-
-    def parse_panopto_nav_item(self, response):
-        nav_items = response.json()
-        panopto_items = [i for i in nav_items if i["name"] == "Panopto Video"]
-        assert len(panopto_items) <= 1, f"got multiple panopto navitems: {nav_items!r}"
-        if not panopto_items:
-            return
-        (panopto_tool,) = panopto_items
-
-        # the API endpoints to do this kept 404ing so we're just gonna scrape
-        yield self.canvas_json_request(
-            self.canvas_endpoint(
-                f"courses/{self.course_id}/external_tools/sessionless_launch"
-            ),
-            method="GET",
-            formdata={
-                "id": str(panopto_tool["id"]),
-                "launch_type": "course_navigation",
-            },
-            callback=self.parse_panopto_launch,
-        )
-
-    def parse_panopto_launch(self, response):
-        launch = response.json()
-        yield self.canvas_form_request(launch["url"], self.parse_panopto_tool_page)
-
-    def parse_panopto_tool_page(self, response):
-        with open("a.html", "w") as f:
-            f.write(response.text)
-        # is it better to make another arg for panopto domain so that we have to use
-        #  dont_filter so that we can catch e.g. redirects to a login page?
-        yield scrapy.FormRequest.from_response(
-            response,
-            formxpath="//form[@data-tool-id]",
-            dont_filter=True,
-            callback=self.parse_panopto_home,
-        )
-
-    def parse_panopto_home(self, response):
-        with open("b.html", "w") as f:
-            f.write(response.text)
