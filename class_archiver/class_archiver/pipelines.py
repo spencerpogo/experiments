@@ -10,9 +10,11 @@ from itemadapter import ItemAdapter
 import scrapy
 from scrapy.pipelines.files import FilesPipeline
 from scrapy.http.request import NO_CALLBACK
+from scrapy.utils.httpobj import urlparse_cached
 
 from .items import CanvasFileItem
 from .spiders.canvas import CanvasModulesSpider
+from .spiders.panopto import PanoptoSpider
 
 
 class CanvasFilesPipeline(FilesPipeline):
@@ -33,6 +35,8 @@ class CanvasFilesPipeline(FilesPipeline):
         assert isinstance(info.spider, CanvasModulesSpider)
         course_id = info.spider.course_id
         clean_filename = re.sub(r"[/\\?%*:|\"<>\x7F\x00-\x1F]", "-", item["filename"])
+        clean_filename = clean_filename.strip(".")
+        assert clean_filename
         return f"canvas-files/{course_id}/{item['id']}_{clean_filename}"
 
     def item_completed(self, results, item, info):
@@ -48,3 +52,43 @@ class CanvasFilesPipeline(FilesPipeline):
             item["file_path"] = ok_results[0]["path"]
             return item
         return super().item_completed(results, item, info)
+
+
+class PanoptoFilesPipeline(FilesPipeline):
+    def get_media_requests(self, item, info):
+        if isinstance(item, PanoptoSessionItem):
+            assert isinstance(
+                info.spider, PanoptoSpider
+            ), f"unknown spider {info.spider!r} returned PanoptoSessionItem"
+            yield scrapy.Request(
+                item["ios_video_url"],
+                headers=info.spider.canvas.auth_headers(),
+                meta={"panopto_type": "video"},
+                dont_filter=True,
+                callback=NO_CALLBACK,
+            )
+            yield scrapy.Request(
+                item["srt_url"],
+                headers=info.spider.canvas.auth_headers(),
+                meta={"panopto_type": "srt"},
+                dont_filter=True,
+                callback=NO_CALLBACK,
+            )
+            # this URL requires auth so there is no point in archiving it
+            del item["srt_url"]
+        return []
+
+    def file_path(self, request, response=None, info=None, *, item=None):
+        assert isinstance(info.spider, CanvasModulesSpider)
+        course_id = info.spider.course_id
+        name = PurePosixPath(urlparse_cached(request).path).name
+        name = re.sub(r"[/\\?%*:|\"<>\x7F\x00-\x1F]", "-", name).strip(".")
+        assert name
+        if request.meta["panopto_type"] == "video":
+            pass
+        elif request.meta["panopto_type"] == "srt":
+            name += ".srt"
+        return f"panopto-files/{course_id}/{name}"
+
+    def item_completed(self, results, item, info):
+        raise NotImplementedError()

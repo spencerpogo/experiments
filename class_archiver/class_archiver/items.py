@@ -28,6 +28,7 @@ class ModuleSubitemItem(scrapy.Item):
     type = scrapy.Field()
     module_id = scrapy.Field()
     content_id = scrapy.Field()
+    external_url = scrapy.Field()
 
 
 class CanvasFileItem(scrapy.Item):
@@ -46,8 +47,16 @@ class CanvasAssignmentItem(scrapy.Item):
     discussion_topic = scrapy.Field()
 
 
-class PanoptoSession(scrapy.Item):
+class CanvasPageItem(scrapy.Item):
+    id = scrapy.Field()
+    url = scrapy.Field()
+    body = scrapy.Field()
+
+
+class PanoptoSessionItem(scrapy.Item):
     id = scrapy.Field()
     name = scrapy.Field()
     ios_video_url = scrapy.Field()
+    ios_video_path = scrapy.Field()
     srt_url = scrapy.Field()
+    srt_path = scrapy.Field()

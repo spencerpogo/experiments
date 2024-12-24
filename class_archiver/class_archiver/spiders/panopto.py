@@ -1,10 +1,16 @@
 import json
 import logging
-from urllib.parse import parse_qs, urlparse
+import math
+from urllib.parse import parse_qs, quote
 
 import scrapy
+from scrapy.utils.httpobj import urlparse_cached
 
 from ..canvas import CanvasScrapyClient
+from ..items import PanoptoSessionItem
+
+
+RESULTS_PER_PAGE = 25
 
 
 class PanoptoSpider(scrapy.Spider):
@@ -77,7 +83,7 @@ class PanoptoSpider(scrapy.Spider):
             "includeArchivedStateCount": True,
             "isSharedWithMe": False,
             "isSubscriptionsPage": False,
-            "maxResults": 25,
+            "maxResults": RESULTS_PER_PAGE,
             "query": None,
             "sessionListOnlyArchived": False,
             "sortAscending": False,
@@ -88,16 +94,15 @@ class PanoptoSpider(scrapy.Spider):
         yield scrapy.http.JsonRequest(
             f"{self.panopto_url}/Panopto/Services/Data.svc/GetSessions",
             method="POST",
-            data={"queryParameters": {**params, "page": 0}},
+            data={"queryParameters": {**params, "page": page}},
             dont_filter=True,
             callback=self.parse_panopto_settings_page,
-            cb_kwargs={"folder_id": folder_id, "page": page}
+            cb_kwargs={"folder_id": folder_id, "page": page},
         )
 
     def parse_panopto_home(self, response):
         # must use request URL because fragment is stripped from response URL
-        url = response.request.url
-        parsed = urlparse(url)
+        parsed = urlparse_cached(response.request)
         assert parsed.path.startswith(
             "/Panopto"
         ), f"expected root of path to be /Panopto in URL {url} {parsed}"
@@ -123,4 +128,23 @@ class PanoptoSpider(scrapy.Spider):
         yield from self.request_sessions_page(folder_id, 0)
 
     def parse_panopto_settings_page(self, response, folder_id, page):
-        print(json.dumps(response.json(), indent=4))
+        data = response.json()["d"]
+        results = data["Results"]
+        for sess in results:
+            it = PanoptoSessionItem()
+            it["name"] = sess["SessionName"]
+            it["ios_video_url"] = sess["IosVideoUrl"]
+            # hardcode language 0 which I assume to be english
+            it["srt_url"] = (
+                f"{self.panopto_url}/Panopto/Pages/Transcription/GenerateSRT.ashx"
+                + f"?id={quote(folder_id)}&language=0"
+            )
+            yield it
+
+        num_results = data["TotalNumber"]
+        assert isinstance(num_results, int)
+        num_pages = math.ceil(num_results / RESULTS_PER_PAGE)
+        print(num_results, num_pages, page)
+        # pages are 0-based!
+        if page < num_pages - 1:
+            yield from self.request_sessions_page(folder_id, page + 1)

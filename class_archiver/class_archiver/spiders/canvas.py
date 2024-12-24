@@ -24,7 +24,7 @@ class CanvasModulesSpider(scrapy.Spider):
 
     def start_requests(self):
         for mod in {"scrapy.downloadermiddlewares.redirect", "scrapy.core.scraper"}:
-            # logging.getLogger(mod).setLevel(logging.INFO)
+            logging.getLogger(mod).setLevel(logging.INFO)
             pass
         yield self.canvas.request(
             self.canvas.api_courses_endpoint(self.course_id, "/modules"),
@@ -57,6 +57,8 @@ class CanvasModulesSpider(scrapy.Spider):
                 yield self.canvas.request(it["url"], self.parse_file)
             elif ty == "Assignment":
                 yield self.canvas.request(it["url"], self.parse_assignment)
+            elif ty == "Page":
+                yield self.canvas.request(it["url"], self.parse_page)
 
             r = ModuleSubitemItem()
             if ty in {"File", "Discussion", "Assignment", "Quiz", "ExternalTool"}:
@@ -68,6 +70,8 @@ class CanvasModulesSpider(scrapy.Spider):
 
             for k in {"title", "position", "indent", "type"}:
                 r[k] = it[k]
+            if "external_url" in it:
+                r["external_url"] = it["external_url"]
             yield r
 
         yield from self.canvas.follow_pagination(response, self.parse_module_items)
@@ -110,4 +114,27 @@ class CanvasModulesSpider(scrapy.Spider):
         for k in {"quiz_id", "discussion_topic"}:
             if k in assignment:
                 r[k] = assignment[k]
+        yield r
+
+    def parse_page(self, response):
+        page = response.json()
+        body = page["body"]
+
+        for f in Selector(text=body).css(".instructure_file_link"):
+            # could just fetch the URL in data-api-endpoint and pass it to parse_file
+            #  but we can save a request by parsing the HTML attributes directly
+            assert (
+                f.attrib["data-api-returntype"] == "File"
+            ), f"unexpected data-api-returntype: {f.attrib!r}"
+
+            endpoint = f.attrib["data-api-endpoint"]
+            endpoint_parts = endpoint.split(f"/courses/{self.course_id}/files/")
+            assert (
+                len(endpoint_parts) == 2
+            ), f"unexpected data-api-endpoint format: {endpoint!r}"
+            yield self.canvas.request(endpoint, self.parse_file)
+
+        r = CanvasPageItem()
+        for k in {"id", "url", "body"}:
+            r[k] = page[k]
         yield r

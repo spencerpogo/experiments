@@ -84,6 +84,11 @@ FEEDS = {
         "item_classes": ["class_archiver.items.CanvasFileItem"],
         "overwrite": True,
     },
+    "export-%(course_id)s/panopto-sessions.jsonl": {
+        "format": "jsonlines",
+        "item_classes": ["class_archiver.items.PanoptoSessionItem"],
+        "overwrite": True,
+    },
 }
 
 # Enable and configure the AutoThrottle extension (disabled by default)
